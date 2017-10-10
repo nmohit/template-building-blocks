@@ -26,6 +26,12 @@ function merge({ settings, buildingBlockSettings, defaultSettings }) {
     // Get the defaults for the OSType selected
     let defaults = _.cloneDeep((_.toLower(settings.osType) === 'windows') ? vmDefaults.defaultWindowsSettings : vmDefaults.defaultLinuxSettings);
 
+    // if disk encryption is required, osDisk.encryptionSettings property needs to be specified in parameter
+    if (_.isNil(settings.osDisk) || _.isNil(settings.osDisk.encryptionSettings)) {
+        // If parameter doesnt have an osDisk.encryptionSettings property, then remove it from defaults as well
+        delete defaults.osDisk.encryptionSettings;
+    }
+
     // if load balancer is required, loadBalancerSettings property needs to be specified in parameter
     if (_.isNil(settings.loadBalancerSettings)) {
         // If parameter doesnt have a loadBalancerSettings property, then remove it from defaults as well
@@ -115,7 +121,7 @@ function merge({ settings, buildingBlockSettings, defaultSettings }) {
     // Add resourceGroupName and SubscriptionId to resources
     let updatedSettings = resources.setupResources(merged, buildingBlockSettings, (parentKey) => {
         return ((parentKey === null) || (v.utilities.isStringInArray(parentKey,
-            ['virtualNetwork', 'availabilitySet', 'nics', 'diagnosticStorageAccounts', 'storageAccounts', 'applicationGatewaySettings', 'loadBalancerSettings', 'scaleSetSettings', 'publicIpAddress'])));
+            ['virtualNetwork', 'availabilitySet', 'nics', 'diagnosticStorageAccounts', 'storageAccounts', 'applicationGatewaySettings', 'loadBalancerSettings', 'scaleSetSettings', 'publicIpAddress', 'keyVault'])));
     });
 
     let normalized = NormalizeProperties(updatedSettings);
@@ -221,6 +227,7 @@ let validOSTypes = ['linux', 'windows'];
 let validCachingType = ['None', 'ReadOnly', 'ReadWrite'];
 let validOsDiskCreateOptions = ['fromImage', 'attach'];
 let validDataDiskCreateOptions = ['fromImage', 'empty', 'attach'];
+let validEncryptionVolumeType = ['OS', 'Data', 'All'];
 
 let isValidOSType = (osType) => {
     return v.utilities.isStringInArray(osType, validOSTypes);
@@ -236,6 +243,10 @@ let isValidOsDiskCreateOptions = (option) => {
 
 let isValidDataDiskCreateOptions = (option) => {
     return v.utilities.isStringInArray(option, validDataDiskCreateOptions);
+};
+
+let isValidEncryptionVolumeType = (option) => {
+    return v.utilities.isStringInArray(option, validEncryptionVolumeType);
 };
 
 function validate(settings) {
@@ -371,6 +382,7 @@ let virtualMachineValidations = {
         let imageReference = parent.imageReference;
         let vmCount = parent.vmCount;
         let isScaleSet = !_.isNil(parent.scaleSetSettings);
+        let osType = parent.osType;
         let osDiskValidations = {
             caching: (value) => {
                 return {
@@ -437,14 +449,114 @@ let virtualMachineValidations = {
                     result: ((_.isFinite(value)) && value > 0),
                     message: 'Value must be greater than 0'
                 };
-            }//,
-            // encryptionSettings: (value) => {
+            },
+            encryptionSettings: (value) => {
+                if (_.isNil(value)) {
+                    return {
+                        result: true
+                    };
+                }
+                // This can work in one of two ways.  One is pre-encrypted disk and the second, is Azure encrypting the disks with the extension
+                // We'll use diskEncryptionKeyUrl as our discriminator to decide how we are working
+                if (_.isUndefined(value.diskEncryptionKeyUrl)) {
+                    // We are going to encrypt with the extension
+                    // Let's check the cross-field values first.
+                    if ((v.utilities.isNullOrWhitespace(value.aadClientSecret) && v.utilities.isNullOrWhitespace(value.aadClientCertThumbprint)) ||
+                    (!v.utilities.isNullOrWhitespace(value.aadClientSecret) && !v.utilities.isNullOrWhitespace(value.aadClientCertThumbprint))) {
+                        return {
+                            result: false,
+                            message: 'Either aadClientCertThumbprint or aadClientSecret must be specified, but not both'
+                        };
+                    }
+
+                    return {
+                        validations: {
+                            aadClientId: v.validationUtilities.isNotNullOrWhitespace,
+                            aadClientCertThumbprint: (value, parent) => {
+                                if (!v.utilities.isNullOrWhitespace(parent.aadClientSecret)) {
+                                    return {
+                                        result: true
+                                    };
+                                }
+
+                                return {
+                                    validations: v.validationUtilities.isNotNullOrWhitespace
+                                };
+                            },
+                            aadClientSecret: (value, parent) => {
+                                if (!v.utilities.isNullOrWhitespace(parent.aadClientCertThumbprint)) {
+                                    return {
+                                        result: true
+                                    };
+                                }
+
+                                return {
+                                    validations: v.validationUtilities.isNotNullOrWhitespace
+                                };
+                            },
+                            diskEncryptionKeyVault: (value) => {
+                                if (_.isNil(value)) {
+                                    return {
+                                        result: false,
+                                        message: 'Value cannot be undefined or null'
+                                    };
+                                }
+
+                                return {
+                                    validations: {
+                                        name: v.validationUtilities.isNotNullOrWhitespace
+                                    }
+                                };
+                            },
+                            diskEncryptionKeyVaultUrl: v.validationUtilities.isNotNullOrWhitespace,
+                            keyEncryptionKeyVault: (value) => {
+                                if (_.isNil(value)) {
+                                    return {
+                                        result: false,
+                                        message: 'Value cannot be undefined or null'
+                                    };
+                                }
+
+                                return {
+                                    validations: {
+                                        name: v.validationUtilities.isNotNullOrWhitespace
+                                    }
+                                };
+                            },
+                            keyEncryptionKeyUrl: v.validationUtilities.isNotNullOrWhitespace,
+                            volumeType: (value) => {
+                                return {
+                                    result: isValidEncryptionVolumeType(value),
+                                    message: `Valid values are ${validEncryptionVolumeType.join(', ')}`
+                                };
+                            },
+                            passphrase: (value) => {
+                                if (osType === 'windows') {
+                                    return {
+                                        result: v.utilities.isNullOrWhitespace(value),
+                                        message: `Value is not valid for osType === '${osType}'`
+                                    };
+                                } else {
+                                    return {
+                                        result: !v.utilities.isNullOrWhitespace(value),
+                                        message: 'Value cannot be undefined, null, or only whitespace'
+                                    };
+                                }
+                            }
+                        }
+                    };
+                } else {
+                    // Return true for now
+                    return {
+                        result: true
+                    };
+                }
             //     return _.isNil(value) ? {
             //         result: true
             //     } : {
             //         validations: encryptionSettingsValidations
             //     };
-            // }
+            }
         };
 
         return {
@@ -861,8 +973,79 @@ let virtualMachineValidations = {
         return {
             validations: vmExtensions.validations
         };
-    }
+    },
+    secrets: (value, parent) => {
+        if (_.isNil(value)) {
+            return {
+                result: true
+            };
+        }
 
+        if (!_.isArray(value)) {
+            return {
+                result: false,
+                message: 'Value must be an array'
+            };
+        }
+
+        if (value.length === 0) {
+            return {
+                result: true
+            };
+        }
+
+        let vm = parent;
+        return {
+            validations: {
+                keyVault: (value) => {
+                    if (_.isNil(value)) {
+                        return {
+                            result: false,
+                            message: 'Value cannot be null or undefined'
+                        };
+                    }
+
+                    return {
+                        validations: {
+                            name: v.validationUtilities.isNotNullOrWhitespace
+                        }
+                    };
+                },
+                certificates: (value) => {
+                    if (!_.isArray(value) || value.length === 0) {
+                        return {
+                            result: false,
+                            message: 'Value must be a non-empty array'
+                        };
+                    }
+
+
+                    return {
+                        validations: {
+                            certificateUrl: v.validationUtilities.isNotNullOrWhitespace,
+                            certificateStore: (value) => {
+                                if (vm.osType === 'windows' && v.utilities.isNullOrWhitespace(value)) {
+                                    return {
+                                        result: false,
+                                        message: `Value must be provided for osType === '${vm.osType}'`
+                                    };
+                                } else if (vm.osType === 'linux' && !v.utilities.isNullOrWhitespace(value)) {
+                                    return {
+                                        result: false,
+                                        message: `Value must not be provided for osType === '${vm.osType}'`
+                                    };
+                                }
+
+                                return {
+                                    result: true
+                                };
+                            }
+                        }
+                    };
+                }
+            }
+        };
+    }
 };
 
 let processorProperties = {
@@ -1172,13 +1355,18 @@ let processorProperties = {
         let secrets = _.map(value, (value) => {
             return {
                 sourceVault: {
-                    id: value.sourceVault
+                    id: resources.resourceId(value.keyVault.subscriptionId, value.keyVault.resourceGroupName, 'Microsoft.KeyVault/vaults', value.keyVault.name)
                 },
                 vaultCertificates: _.map(value.certificates, (value) => {
-                    return {
-                        certificateUrl: value.certificateUrl,
-                        certificateStore: value.certificateStore
+                    let certificate = {
+                        certificateUrl: value.certificateUrl
                     };
+
+                    if (value.certificateStore) {
+                        certificate.certificateStore = value.certificateStore;
+                    }
+
+                    return certificate;
                 })
             };
         });
