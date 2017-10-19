@@ -1944,22 +1944,48 @@ describe('virtualMachineSettings:', () => {
                 beforeEach(() => {
                     settings.osType = 'windows';
                 });
+                it('validates that no errors are thrown if passphrase is undefined', () => {
+                    delete settings.osDisk.encryptionSettings.passphrase;
+                    let result = validate(settings);
+                    expect(result.length).toEqual(0);
+                });
+                it('validates that errors are thrown if passphrase is specified', () => {
+                    settings.osDisk.encryptionSettings.passphrase = null;
+                    let result = validate(settings);
+                    expect(result.length).toEqual(1);
+                    expect(result[0].name).toEqual('.osDisk.encryptionSettings.passphrase');
+
+                    settings.osDisk.encryptionSettings.passphrase = '';
+                    result = validate(settings);
+                    expect(result.length).toEqual(1);
+                    expect(result[0].name).toEqual('.osDisk.encryptionSettings.passphrase');
+
+                    settings.osDisk.encryptionSettings.passphrase = 'passphrase';
+                    result = validate(settings);
+                    expect(result.length).toEqual(1);
+                    expect(result[0].name).toEqual('.osDisk.encryptionSettings.passphrase');
+                });
             });
             describe('linux:', () => {
                 beforeEach(() => {
                     settings.osType = 'linux';
+                    settings.osDisk.encryptionSettings.passphrase = 'passphrase';
+                });
+                it('validates that no errors are thrown if passphrase is specified', () => {
+                    let result = validate(settings);
+                    expect(result.length).toEqual(0);
                 });
                 it('validates that errors are thrown if passphrase is undefined, null, or only whitespace', () => {
                     delete settings.osDisk.encryptionSettings.passphrase;
                     let result = validate(settings);
                     expect(result.length).toEqual(1);
                     expect(result[0].name).toEqual('.osDisk.encryptionSettings.passphrase');
-    
+
                     settings.osDisk.encryptionSettings.passphrase = null;
                     result = validate(settings);
                     expect(result.length).toEqual(1);
                     expect(result[0].name).toEqual('.osDisk.encryptionSettings.passphrase');
-    
+
                     settings.osDisk.encryptionSettings.passphrase = '';
                     result = validate(settings);
                     expect(result.length).toEqual(1);

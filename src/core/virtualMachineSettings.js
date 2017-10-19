@@ -510,10 +510,10 @@ let virtualMachineValidations = {
                             },
                             diskEncryptionKeyVaultUrl: v.validationUtilities.isNotNullOrWhitespace,
                             keyEncryptionKeyVault: (value) => {
+                                // This is not required.
                                 if (_.isNil(value)) {
                                     return {
-                                        result: false,
-                                        message: 'Value cannot be undefined or null'
+                                        result: true
                                     };
                                 }
 
@@ -523,7 +523,18 @@ let virtualMachineValidations = {
                                     }
                                 };
                             },
-                            keyEncryptionKeyUrl: v.validationUtilities.isNotNullOrWhitespace,
+                            keyEncryptionKeyUrl: (value, parent) => {
+                                if (_.isNil(parent.keyEncryptionKeyVault)) {
+                                    return {
+                                        result: v.utilities.isNullOrWhitespace(value),
+                                        message: 'Value cannot be specified without a keyEncryptionKeyVault setting'
+                                    };
+                                } else {
+                                    return {
+                                        validations: v.validationUtilities.isNotNullOrWhitespace
+                                    };
+                                }
+                            },
                             volumeType: (value) => {
                                 return {
                                     result: isValidEncryptionVolumeType(value),
@@ -533,8 +544,8 @@ let virtualMachineValidations = {
                             passphrase: (value) => {
                                 if (osType === 'windows') {
                                     return {
-                                        result: v.utilities.isNullOrWhitespace(value),
-                                        message: `Value is not valid for osType === '${osType}'`
+                                        result: _.isUndefined(value),
+                                        message: `Value cannot be specified for osType === '${osType}'`
                                     };
                                 } else {
                                     return {
