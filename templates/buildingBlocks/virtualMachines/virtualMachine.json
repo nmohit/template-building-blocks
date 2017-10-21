@@ -55,7 +55,7 @@
         }
       },
       "secrets": {
-        "type": "object",
+        "type": "secureObject",
         "metadata": {
           "description": "secrets"
         }

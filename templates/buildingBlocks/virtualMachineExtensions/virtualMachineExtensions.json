@@ -12,7 +12,7 @@
             }
         },
         "extensionsProtectedSettings": {
-            "type": "object"
+            "type": "secureObject"
         }
     },
     "variables": {
