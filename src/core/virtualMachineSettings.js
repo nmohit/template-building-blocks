@@ -13,6 +13,8 @@ let vmExtensions = require('./virtualMachineExtensionsSettings');
 let scaleSetSettings = require('./virtualMachineScaleSetSettings');
 const os = require('os');
 
+const AUTHENTICATION_PLACEHOLDER = '$AUTHENTICATION$';
+
 function merge({ settings, buildingBlockSettings, defaultSettings }) {
     if (v.utilities.isNullOrWhitespace(settings.osType)) {
         settings.osType = 'linux';
@@ -121,7 +123,8 @@ function merge({ settings, buildingBlockSettings, defaultSettings }) {
     // Add resourceGroupName and SubscriptionId to resources
     let updatedSettings = resources.setupResources(merged, buildingBlockSettings, (parentKey) => {
         return ((parentKey === null) || (v.utilities.isStringInArray(parentKey,
-            ['virtualNetwork', 'availabilitySet', 'nics', 'diagnosticStorageAccounts', 'storageAccounts', 'applicationGatewaySettings', 'loadBalancerSettings', 'scaleSetSettings', 'publicIpAddress', 'keyVault'])));
+            ['virtualNetwork', 'availabilitySet', 'nics', 'diagnosticStorageAccounts', 'storageAccounts', 'applicationGatewaySettings',
+            'loadBalancerSettings', 'scaleSetSettings', 'publicIpAddress', 'keyVault', 'diskEncryptionKeyVault', 'keyEncryptionKeyVault'])));
     });
 
     let normalized = NormalizeProperties(updatedSettings);
@@ -1322,7 +1325,7 @@ let processorProperties = {
         if (parent.osType === 'windows') {
             return {
                 osProfile: {
-                    adminPassword: '$SECRET$',
+                    adminPassword: AUTHENTICATION_PLACEHOLDER,
                     windowsConfiguration: {
                         provisionVmAgent: true
                     }
@@ -1331,7 +1334,7 @@ let processorProperties = {
         } else {
             return {
                 osProfile: {
-                    adminPassword: '$SECRET$',
+                    adminPassword: AUTHENTICATION_PLACEHOLDER,
                     linuxConfiguration: null
                 }
             };
@@ -1347,7 +1350,7 @@ let processorProperties = {
                         publicKeys: [
                             {
                                 path: `/home/${parent.adminUsername}/.ssh/authorized_keys`,
-                                keyData: '$SECRET$'
+                                keyData: AUTHENTICATION_PLACEHOLDER
                             }
                         ]
                     }
@@ -1473,7 +1476,7 @@ function transform(settings, buildingBlockSettings) {
                     autoUpgradeMinorVersion: true,
                     settings: {
                         AADClientID: vmStamp.osDisk.encryptionSettings.aadClientId,
-                        KeyVaultURL: vmStamp.osDisk.encryptionSettings.bekKeyVaultUrl,
+                        KeyVaultURL: vmStamp.osDisk.encryptionSettings.diskEncryptionKeyVaultUrl,
                         KeyEncryptionKeyURL: vmStamp.osDisk.encryptionSettings.keyEncryptionKeyUrl,
                         KeyEncryptionAlgorithm: 'RSA-OAEP',
                         VolumeType: vmStamp.osDisk.encryptionSettings.volumeType,
@@ -1514,10 +1517,16 @@ function transform(settings, buildingBlockSettings) {
             transformedExtensions = transformedExtensions.concat(vmExtensions.transform(diskEncryptionExtension).extensions);
             encryptionSettings = {
                 enabled: true,
-                bekKeyVault: vmStamp.osDisk.encryptionSettings.bekKeyVault,
-                bekKeyVaultUrl: vmStamp.osDisk.encryptionSettings.bekKeyVaultUrl,
-                kekKeyVault: vmStamp.osDisk.encryptionSettings.kekKeyVault,
-                kekUrl: vmStamp.osDisk.encryptionSettings.keyEncryptionKeyUrl
+                diskEncryptionKeyVault: resources.resourceId(
+                    vmStamp.osDisk.encryptionSettings.diskEncryptionKeyVault.subscriptionId,
+                    vmStamp.osDisk.encryptionSettings.diskEncryptionKeyVault.resourceGroupName,
+                    'Microsoft.KeyVault/vaults', vmStamp.osDisk.encryptionSettings.diskEncryptionKeyVault.name),
+                //bekKeyVaultUrl: vmStamp.osDisk.encryptionSettings.bekKeyVaultUrl,
+                keyEncryptionKeyVault: resources.resourceId(
+                    vmStamp.osDisk.encryptionSettings.keyEncryptionKeyVault.subscriptionId,
+                    vmStamp.osDisk.encryptionSettings.keyEncryptionKeyVault.resourceGroupName,
+                    'Microsoft.KeyVault/vaults', vmStamp.osDisk.encryptionSettings.keyEncryptionKeyVault.name),
+                keyEncryptionKeyUrl: vmStamp.osDisk.encryptionSettings.keyEncryptionKeyUrl
             };
         }
 
@@ -1551,14 +1560,15 @@ function transform(settings, buildingBlockSettings) {
 
     // Process secrets.  We need to put them into a shape that can be assigned to a secureString parameter.
     if (settings.osType === 'linux' && !_.isNil(settings.sshPublicKey)) {
-        accumulator.secret = settings.sshPublicKey;
+        accumulator.authentication = settings.sshPublicKey;
     } else {
-        accumulator.secret = settings.adminPassword;
+        accumulator.authentication = settings.adminPassword;
     }
 
-    if (_.isUndefined(accumulator.secret.reference)) {
-        accumulator.secret = {
-            value: accumulator.secret
+    // If it is not a KeyVault reference, shape it into a parameter.
+    if (_.isUndefined(accumulator.authentication.reference)) {
+        accumulator.authentication = {
+            value: accumulator.authentication
         };
     }
 
@@ -1631,8 +1641,27 @@ function process({ settings, buildingBlockSettings, defaultSettings }) {
     }, []), _.isEqual);
     // Extract the secrets into their own object and delete them from the virtual machine parameters
     results = _.transform(results, (result, value) => {
-        result.secrets.secrets.push(value.parameters.secret);
-        delete value.parameters.secret;
+        let secrets = {
+            authentication: value.parameters.authentication,
+            extensionsProtectedSettings: []
+        };
+        delete value.parameters.authentication;
+        if (value.parameters.scaleSet.length === 0) {
+            value.parameters.virtualMachines = _.map(value.parameters.virtualMachines, (value) => {
+                let protectedSettings = {};
+                value.extensions = _.map(value.extensions, (value, index) => {
+                    //protectedSettings.push(value.extensionProtectedSettings);
+                    protectedSettings[index.toString()] = value.extensionProtectedSettings;
+                    delete value.extensionProtectedSettings;
+                    return value;
+                });
+                secrets.extensionsProtectedSettings.push(protectedSettings);
+                return value;
+            });
+        } else {
+            // TODO!!!
+        }
+        result.secrets.secrets.push(secrets);
         result.virtualMachineParameters.push(value.parameters);
     }, {
         virtualMachineParameters: [],
@@ -1641,6 +1670,7 @@ function process({ settings, buildingBlockSettings, defaultSettings }) {
         }
     });
 
+    // Extract any protected settings from extensions on the virtual machines
     return {
         resourceGroups: uniqueResourceGroups,
         parameters: {
