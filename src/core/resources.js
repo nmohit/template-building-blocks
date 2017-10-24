@@ -64,7 +64,7 @@ exports.resourceId = function (subscriptionId, resourceGroupName, resourceType, 
 
     let resourceTypeParts = _.split(_.trimEnd(resourceType, '/'), '/');
     if ((resourceTypeParts.length < 2) || (resourceTypeParts.length > 3)) {
-        throw new Error(`[resources:resourceId()] resourceType: Invalid resourceType length ${resourceTypeParts.length}`);
+        throw new Error(`[resources:resourceId()] resourceType: Invalid length ${resourceTypeParts.length}`);
     }
 
     if ((resourceTypeParts.length === 2) && (validation.utilities.isNullOrWhitespace(resourceName))) {

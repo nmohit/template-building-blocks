@@ -82,7 +82,7 @@
                             "apiVersion": "2017-05-10",
                             "name": "[concat(parameters('deploymentContext').parentTemplateUniqueString, '-', variables('updatedSource')[copyIndex()].name, '-encrypt-', variables('templateUniqueString'))]",
                             "resourceGroup": "[variables('updatedSource')[copyIndex()].resourceGroupName]",
-                            "condition": "[variables('updatedSource')[copyIndex()].encryptionSettings.enabled]",
+                            "condition": "[variables('updatedSource')[copyIndex()].encryptionSettings.useExtension]",
                             "dependsOn": [
                                 "[concat(parameters('deploymentContext').parentTemplateUniqueString, '-', variables('updatedSource')[copyIndex()].name, '-deployExt-', variables('templateUniqueString'))]"
                             ],

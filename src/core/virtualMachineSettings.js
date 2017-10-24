@@ -259,18 +259,6 @@ function validate(settings) {
     });
 }
 
-let encryptionSettingsValidations = {
-    enabled: _.isBoolean,
-    diskEncryptionKey: {
-        secretUrl: v.validationUtilities.isNotNullOrWhitespace,
-        sourceVaultName: v.validationUtilities.isNotNullOrWhitespace
-    },
-    keyEncryptionKey: {
-        keyUrl: v.validationUtilities.isNotNullOrWhitespace,
-        sourceVaultName: v.validationUtilities.isNotNullOrWhitespace
-    }
-};
-
 let virtualMachineValidations = {
     virtualNetwork: (value, parent) => {
         if (_.isNil(parent.scaleSetSettings) && value.location !== parent.location) {
@@ -453,49 +441,99 @@ let virtualMachineValidations = {
                     message: 'Value must be greater than 0'
                 };
             },
-            encryptionSettings: (value) => {
+            encryptionSettings: (value, parent) => {
                 if (_.isNil(value)) {
                     return {
                         result: true
                     };
                 }
                 // This can work in one of two ways.  One is pre-encrypted disk and the second, is Azure encrypting the disks with the extension
-                // We'll use diskEncryptionKeyUrl as our discriminator to decide how we are working
-                if (_.isUndefined(value.diskEncryptionKeyUrl)) {
-                    // We are going to encrypt with the extension
-                    // Let's check the cross-field values first.
-                    if ((v.utilities.isNullOrWhitespace(value.aadClientSecret) && v.utilities.isNullOrWhitespace(value.aadClientCertThumbprint)) ||
-                    (!v.utilities.isNullOrWhitespace(value.aadClientSecret) && !v.utilities.isNullOrWhitespace(value.aadClientCertThumbprint))) {
+                // We'll use diskEncryptionKey as our discriminator to decide how we are working
+                if (value.diskEncryptionKey) {
+                    // This is a set of pre-encrypted disks, so we need to set the settings when we create the disk.  The required information
+                    // MUST already be in KeyVault.  Each of these must be an array since this only works in an attach scenario.
+                    if (parent.createOption !== 'attach') {
                         return {
                             result: false,
-                            message: 'Either aadClientCertThumbprint or aadClientSecret must be specified, but not both'
+                            message: 'Pre-encrypted disks are only supported with createOption === \'attach\''
                         };
                     }
-
+                    return {
+                        validations: {
+                            diskEncryptionKey: {
+                                secretUrls: (value) => {
+                                    if (_.isNil(value) || !_.isArray(value) || value.length !== vmCount) {
+                                        return {
+                                            result: false,
+                                            message: 'secretUrls must be an array with a length === vmCount pointing to a KeyVault secret for each virtual machine'
+                                        };
+                                    } else {
+                                        return {
+                                            validations: v.validationUtilities.isNotNullOrWhitespace
+                                        };
+                                    }
+                                },
+                                keyVault: v.resourceReferenceValidations
+                            },
+                            keyEncryptionKey: (value) => {
+                                // This can be null, if we are not using a key encryption key
+                                if (_.isNil(value)) {
+                                    return {
+                                        result: true
+                                    };
+                                } else {
+                                    return {
+                                        validations: {
+                                            keyUrls: (value) => {
+                                                if (_.isNil(value) || !_.isArray(value) || value.length !== vmCount || value.length !== 1) {
+                                                    return {
+                                                        result: false,
+                                                        message: 'keyUrls must be an array with a length === vmCount or length === 1 (to use the same key) pointing to a KeyVault key to use for each diskEncryptionKey'
+                                                    };
+                                                } else {
+                                                    return {
+                                                        validations: v.validationUtilities.isNotNullOrWhitespace
+                                                    };
+                                                }
+                                            },
+                                            keyVault: v.resourceReferenceValidations
+                                        }
+                                    };
+                                }
+                            }
+                        }
+                    };
+                } else {
+                    // We are going to encrypt with the extension
+                    // Let's check the cross-field values first.  Since protectedSettings may not be there or is a keyVault reference, let's be safe
+                    let aadClientSecret = _.get(value, 'protectedSettings.aadClientSecret');
+                    let hasKeyVaultReference = _.get(value, 'protectedSettings.reference');
                     return {
                         validations: {
                             aadClientId: v.validationUtilities.isNotNullOrWhitespace,
                             aadClientCertThumbprint: (value, parent) => {
-                                if (!v.utilities.isNullOrWhitespace(parent.aadClientSecret)) {
+                                // If a key vault reference exists, we can't really validate this since aadClientSecret could be in the
+                                // KeyVault referenced by protectedSettings.  If the aadClientSecret is not in the KeyVault, the deployment will
+                                // fail if this is not specified.
+                                if (hasKeyVaultReference) {
                                     return {
                                         result: true
                                     };
                                 }
-
-                                return {
-                                    validations: v.validationUtilities.isNotNullOrWhitespace
-                                };
-                            },
-                            aadClientSecret: (value, parent) => {
-                                if (!v.utilities.isNullOrWhitespace(parent.aadClientCertThumbprint)) {
+                                if ((!v.utilities.isNullOrWhitespace(value)) && (!v.utilities.isNullOrWhitespace(aadClientSecret))) {
+                                    return {
+                                        result: false,
+                                        message: 'Either aadClientCertThumbprint or aadClientSecret must be specified, but not both'
+                                    };
+                                } else if (!v.utilities.isNullOrWhitespace(aadClientSecret)) {
                                     return {
                                         result: true
                                     };
+                                } else {
+                                    return {
+                                        validations: v.validationUtilities.isNotNullOrWhitespace
+                                    };
                                 }
-
-                                return {
-                                    validations: v.validationUtilities.isNotNullOrWhitespace
-                                };
                             },
                             diskEncryptionKeyVault: (value) => {
                                 if (_.isNil(value)) {
@@ -506,31 +544,27 @@ let virtualMachineValidations = {
                                 }
 
                                 return {
-                                    validations: {
-                                        name: v.validationUtilities.isNotNullOrWhitespace
-                                    }
+                                    validations: resources.resourceReferenceValidations
                                 };
                             },
                             diskEncryptionKeyVaultUrl: v.validationUtilities.isNotNullOrWhitespace,
-                            keyEncryptionKeyVault: (value) => {
-                                // This is not required.
-                                if (_.isNil(value)) {
+                            keyEncryptionKeyVault: (value, parent) => {
+                                if (v.utilities.isNullOrWhitespace(parent.keyEncryptionKeyUrl)) {
                                     return {
-                                        result: true
+                                        result: _.isNil(value),
+                                        message: 'Value cannot be specified without a keyEncryptionKeyUrl'
                                     };
                                 }
 
                                 return {
-                                    validations: {
-                                        name: v.validationUtilities.isNotNullOrWhitespace
-                                    }
+                                    validations: resources.resourceReferenceValidations
                                 };
                             },
                             keyEncryptionKeyUrl: (value, parent) => {
                                 if (_.isNil(parent.keyEncryptionKeyVault)) {
                                     return {
                                         result: v.utilities.isNullOrWhitespace(value),
-                                        message: 'Value cannot be specified without a keyEncryptionKeyVault setting'
+                                        message: 'Value cannot be specified without a keyEncryptionKeyVault'
                                     };
                                 } else {
                                     return {
@@ -544,32 +578,42 @@ let virtualMachineValidations = {
                                     message: `Valid values are ${validEncryptionVolumeType.join(', ')}`
                                 };
                             },
-                            passphrase: (value) => {
-                                if (osType === 'windows') {
+                            protectedSettings: (value, parent) => {
+                                // First, let's see if we are a keyvault reference
+                                if (!_.isNil(value) && (value.reference)) {
+                                    return v.keyVaultSecretValidations;
+                                }
+                                // If our osType is linux, this CANNOT be null or undefined, because passphrase must be there.
+                                // If our osType is windows, this may or may not be there, based on the value of aadClientCertThumbprint
+                                if ((osType === 'windows') && (!v.utilities.isNullOrWhitespace(parent.aadClientCertThumbprint)) &&
+                                    (_.isNil(value))) {
                                     return {
-                                        result: _.isUndefined(value),
-                                        message: `Value cannot be specified for osType === '${osType}'`
-                                    };
-                                } else {
-                                    return {
-                                        result: !v.utilities.isNullOrWhitespace(value),
-                                        message: 'Value cannot be undefined, null, or only whitespace'
+                                        result: true
                                     };
                                 }
+                                return {
+                                    validations: {
+                                        // If aadClientCertThumbprint is invalid, we validate this.
+                                        // Otherwise, that means aadClientCertThumbprint was specified and we should error if aadClientSecret is present
+                                        aadClientSecret: v.utilities.isNullOrWhitespace(parent.aadClientCertThumbprint) ? v.validationUtilities.isNotNullOrWhitespace :
+                                            (value) => {
+                                                return {
+                                                    result: _.isUndefined(value),
+                                                    message: 'Either aadClientCertThumbprint or aadClientSecret must be specified, but not both'
+                                                };
+                                            },
+                                        passphrase: osType === 'windows' ? (value) => {
+                                            return {
+                                                result: _.isUndefined(value),
+                                                message: `Value cannot be specified for osType === '${osType}'`
+                                            };
+                                        } : v.validationUtilities.isNotNullOrWhitespace
+                                    }
+                                };
                             }
                         }
                     };
-                } else {
-                    // Return true for now
-                    return {
-                        result: true
-                    };
                 }
-            //     return _.isNil(value) ? {
-            //         result: true
-            //     } : {
-            //         validations: encryptionSettingsValidations
-            //     };
             }
         };
 
@@ -1115,23 +1159,39 @@ let processorProperties = {
             instance.diskSizeGB = value.diskSizeGB;
         }
 
-        // if (value.encryptionSettings) {
-        //     instance.encryptionSettings = {
-        //         diskEncryptionKey: {
-        //             secretUrl: value.encryptionSettings.diskEncryptionKey.secretUrl,
-        //             sourceVault: {
-        //                 id: resources.resourceId(value.encryptionSettings.subscriptionId, value.encryptionSettings.resourceGroupName, 'Microsoft.KeyVault/vaults', value.encryptionSettings.diskEncryptionKey.sourceVaultName)
-        //             }
-        //         },
-        //         keyEncryptionKey: {
-        //             keyUrl: value.encryptionSettings.keyEncryptionKey.keyUrl,
-        //             sourceVault: {
-        //                 id: resources.resourceId(value.encryptionSettings.subscriptionId, value.encryptionSettings.resourceGroupName, 'Microsoft.KeyVault/vaults', value.encryptionSettings.keyEncryptionKey.sourceVaultName)
-        //             }
-        //         },
-        //         enabled: true
-        //     };
-        // }
+        // The disk is pre-encrypted, so just set the fields.  If the disk is not pre-encrypted, this will be handled by an extension later.
+        if ((value.encryptionSettings) && (value.encryptionSettings.diskEncryptionKey)) {
+            instance.encryptionSettings = {
+                enabled: true,
+                diskEncryptionKey: {
+                    sourceVault: {
+                        id: resources.resourceId(
+                            value.encryptionSettings.diskEncryptionKey.keyVault.subscriptionId,
+                            value.encryptionSettings.diskEncryptionKey.keyVault.resourceGroupName,
+                            'Microsoft.KeyVault/vaults',
+                            value.encryptionSettings.diskEncryptionKey.keyVault.name
+                        )
+                    },
+                    secretUrl: value.encryptionSettings.diskEncryptionKey.secretUrls[index]
+                }
+            };
+
+            if (value.encryptionSettings.keyEncryptionKey) {
+                instance.encryptionSettings.keyEncryptionKey = {
+                    sourceVault: {
+                        id: resources.resourceId(
+                            value.encryptionSettings.keyEncryptionKey.keyVault.subscriptionId,
+                            value.encryptionSettings.keyEncryptionKey.keyVault.resourceGroupName,
+                            'Microsoft.KeyVault/vaults',
+                            value.encryptionSettings.keyEncryptionKey.keyVault.name
+                        )
+                    },
+                    keyUrl: value.encryptionSettings.keyEncryptionKey.keyUrls.length === 1 ?
+                        value.encryptionSettings.keyEncryptionKey.keyUrls[0] :
+                        value.encryptionSettings.keyEncryptionKey.keyUrls[index]
+                };
+            }
+        }
 
         if (value.createOption === 'attach') {
             if (parent.storageAccounts.managed) {
@@ -1462,10 +1522,10 @@ function transform(settings, buildingBlockSettings) {
         // We will build off of the unprocessed vmSettings and put the extension in the building block extension format
         // and reuse our code. ;)
         let encryptionSettings = {
-            enabled: false
+            useExtension: false
         };
 
-        if (vmStamp.osDisk.encryptionSettings) {
+        if ((vmStamp.osDisk.encryptionSettings) && (_.isNil(vmStamp.osDisk.encryptionSettings.diskEncryptionKey))) {
             let diskEncryptionExtension = [{
                 vms: [vmStamp.name],
                 extensions: [{
@@ -1493,17 +1553,38 @@ function transform(settings, buildingBlockSettings) {
                 diskEncryptionExtension[0].extensions[0].settings.SequenceVersion = '1.0';
             }
 
-            if (vmStamp.osDisk.encryptionSettings.aadClientSecret) {
-                diskEncryptionExtension[0].extensions[0].protectedSettings.AADClientSecret = vmStamp.osDisk.encryptionSettings.aadClientSecret;
-            }
-
             if (vmStamp.osDisk.encryptionSettings.aadClientCertThumbprint) {
                 diskEncryptionExtension[0].extensions[0].settings.AADClientCertThumbprint = vmStamp.osDisk.encryptionSettings.aadClientCertThumbprint;
             }
 
-            // If we are linux, we have another "key"
-            if (vmStamp.osDisk.encryptionSettings.passphrase) {
-                diskEncryptionExtension[0].extensions[0].protectedSettings.Passphrase = vmStamp.osDisk.encryptionSettings.passphrase;
+            // if (vmStamp.osDisk.encryptionSettings.aadClientSecret) {
+            //     diskEncryptionExtension[0].extensions[0].protectedSettings.AADClientSecret = vmStamp.osDisk.encryptionSettings.aadClientSecret;
+            // }
+
+            // // If we are linux, we have another "key"
+            // if (vmStamp.osDisk.encryptionSettings.passphrase) {
+            //     diskEncryptionExtension[0].extensions[0].protectedSettings.Passphrase = vmStamp.osDisk.encryptionSettings.passphrase;
+            // }
+            if (vmStamp.osDisk.encryptionSettings.protectedSettings) {
+                // If there are extra things in the keyVault reference, the templates will fail
+                if (vmStamp.osDisk.encryptionSettings.protectedSettings.reference) {
+                    diskEncryptionExtension[0].extensions[0].protectedSettings.reference = {
+                        keyVault: {
+                            id: resources.resourceId(
+                                vmStamp.osDisk.encryptionSettings.protectedSettings.reference.keyVault.subscriptionId,
+                                vmStamp.osDisk.encryptionSettings.protectedSettings.reference.keyVault.resourceGroupName,
+                                'Microsoft.KeyVault/vaults',
+                                vmStamp.osDisk.encryptionSettings.protectedSettings.reference.keyVault.name)
+                        },
+                        secretName: vmStamp.osDisk.encryptionSettings.protectedSettings.reference.secretName
+                    };
+                    // delete diskEncryptionExtension[0].extensions[0].protectedSettings.reference.keyVault.subscriptionId;
+                    // delete diskEncryptionExtension[0].extensions[0].protectedSettings.reference.keyVault.resourceGroupName;
+                    // delete diskEncryptionExtension[0].extensions[0].protectedSettings.reference.keyVault.location;
+
+                } else {
+                    diskEncryptionExtension[0].extensions[0].protectedSettings = vmStamp.osDisk.encryptionSettings.protectedSettings;
+                }
             }
 
             if (vmStamp.osDisk.encryptionSettings.diskFormatQuery) {
@@ -1516,7 +1597,7 @@ function transform(settings, buildingBlockSettings) {
             // We need to put this at the end of all of our extensions since they could install things.
             transformedExtensions = transformedExtensions.concat(vmExtensions.transform(diskEncryptionExtension).extensions);
             encryptionSettings = {
-                enabled: true,
+                useExtension: true,
                 diskEncryptionKeyVault: resources.resourceId(
                     vmStamp.osDisk.encryptionSettings.diskEncryptionKeyVault.subscriptionId,
                     vmStamp.osDisk.encryptionSettings.diskEncryptionKeyVault.resourceGroupName,
