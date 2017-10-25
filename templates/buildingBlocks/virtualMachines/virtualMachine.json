@@ -341,6 +341,7 @@
             "scaleSet": {
               "value": "[parameters('scaleSet')]"
             },
+            "authentication": "[parameters('secrets').authentication]",
             "secrets": {
               "value": "[parameters('secrets')]"
             }

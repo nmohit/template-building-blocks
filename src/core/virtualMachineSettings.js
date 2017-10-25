@@ -124,7 +124,7 @@ function merge({ settings, buildingBlockSettings, defaultSettings }) {
     let updatedSettings = resources.setupResources(merged, buildingBlockSettings, (parentKey) => {
         return ((parentKey === null) || (v.utilities.isStringInArray(parentKey,
             ['virtualNetwork', 'availabilitySet', 'nics', 'diagnosticStorageAccounts', 'storageAccounts', 'applicationGatewaySettings',
-            'loadBalancerSettings', 'scaleSetSettings', 'publicIpAddress', 'keyVault', 'diskEncryptionKeyVault', 'keyEncryptionKeyVault'])));
+                'loadBalancerSettings', 'scaleSetSettings', 'publicIpAddress', 'keyVault', 'diskEncryptionKeyVault', 'keyEncryptionKeyVault'])));
     });
 
     let normalized = NormalizeProperties(updatedSettings);
@@ -969,12 +969,12 @@ let virtualMachineValidations = {
         if (_.isNil(value)) {
             return { result: true };
         }
-        if (!_.isNil(parent.osDisk.encryptionSettings)) {
-            return {
-                result: false,
-                message: '.osDisk.encryptionSettings cannot be provided for scalesets.'
-            };
-        }
+        // if (!_.isNil(parent.osDisk.encryptionSettings)) {
+        //     return {
+        //         result: false,
+        //         message: '.osDisk.encryptionSettings cannot be provided for scalesets.'
+        //     };
+        // }
 
         if (parent.osDisk.createOption === 'attach') {
             return {
@@ -1059,14 +1059,12 @@ let virtualMachineValidations = {
                     if (_.isNil(value)) {
                         return {
                             result: false,
-                            message: 'Value cannot be null or undefined'
+                            message: 'Value cannot be undefined or null'
                         };
                     }
 
                     return {
-                        validations: {
-                            name: v.validationUtilities.isNotNullOrWhitespace
-                        }
+                        validations: resources.resourceReferenceValidations
                     };
                 },
                 certificates: (value) => {
@@ -1578,12 +1576,18 @@ function transform(settings, buildingBlockSettings) {
                         },
                         secretName: vmStamp.osDisk.encryptionSettings.protectedSettings.reference.secretName
                     };
-                    // delete diskEncryptionExtension[0].extensions[0].protectedSettings.reference.keyVault.subscriptionId;
-                    // delete diskEncryptionExtension[0].extensions[0].protectedSettings.reference.keyVault.resourceGroupName;
-                    // delete diskEncryptionExtension[0].extensions[0].protectedSettings.reference.keyVault.location;
 
                 } else {
-                    diskEncryptionExtension[0].extensions[0].protectedSettings = vmStamp.osDisk.encryptionSettings.protectedSettings;
+                    diskEncryptionExtension[0].extensions[0].protectedSettings = {};
+                    if (vmStamp.osDisk.encryptionSettings.protectedSettings.aadClientSecret) {
+                        diskEncryptionExtension[0].extensions[0].protectedSettings.AADClientSecret =
+                        vmStamp.osDisk.encryptionSettings.protectedSettings.aadClientSecret;
+                    }
+
+                    if (vmStamp.osDisk.encryptionSettings.protectedSettings.passphrase) {
+                        diskEncryptionExtension[0].extensions[0].protectedSettings.Passphrase =
+                        vmStamp.osDisk.encryptionSettings.protectedSettings.passphrase;
+                    }
                 }
             }
 
@@ -1740,7 +1744,25 @@ function process({ settings, buildingBlockSettings, defaultSettings }) {
                 return value;
             });
         } else {
-            // TODO!!!
+            value.parameters.scaleSet = _.map(value.parameters.scaleSet, (value) => {
+                let protectedSettings = {};
+                // These have already been transformed at this point.  Should we change this?
+                value.properties.virtualMachineProfile.extensionProfile.extensions =
+                    _.map(value.properties.virtualMachineProfile.extensionProfile.extensions, (value, index) => {
+                        // We will reverse what the scale set settings did....for now.
+                        if (value.properties.protectedSettings.reference) {
+                            protectedSettings[index.toString()] = value.properties.protectedSettings;
+                        } else {
+                            protectedSettings[index.toString()] = {
+                                value: JSON.stringify(value.properties.protectedSettings)
+                            };
+                        }
+                        delete value.properties.protectedSettings;
+                        return value;
+                    });
+                secrets.extensionsProtectedSettings.push(protectedSettings);
+                return value;
+            });
         }
         result.secrets.secrets.push(secrets);
         result.virtualMachineParameters.push(value.parameters);

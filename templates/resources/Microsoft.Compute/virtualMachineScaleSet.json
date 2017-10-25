@@ -8,13 +8,16 @@
         "scaleSet": {
             "type": "array"
         },
-        "secret": {
+        "authentication": {
             "type": "securestring"
+        },
+        "secrets": {
+            "type": "object"
         }
     },
     "variables": {
         "templateUniqueString": "[uniqueString(concat(string(parameters('deploymentContext')), string(parameters('scaleSet'))))]",
-        "updatedSource": "[json(replace(concat(string(parameters('scaleSet'))), '$SECRET$', parameters('secret')))]"
+        "updatedSource": "[json(replace(concat(string(parameters('scaleSet'))), '$AUTHENTICATION$', parameters('authentication')))]"
     },
     "resources": [
         {
