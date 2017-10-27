@@ -5,7 +5,7 @@
         "deploymentContext": {
             "type": "object"
         },
-        "scaleSet": {
+        "scaleSets": {
             "type": "array"
         },
         "authentication": {
@@ -16,8 +16,8 @@
         }
     },
     "variables": {
-        "templateUniqueString": "[uniqueString(concat(string(parameters('deploymentContext')), string(parameters('scaleSet'))))]",
-        "updatedSource": "[json(replace(concat(string(parameters('scaleSet'))), '$AUTHENTICATION$', parameters('authentication')))]"
+        "templateUniqueString": "[uniqueString(concat(string(parameters('deploymentContext')), string(parameters('scaleSets'))))]",
+        "updatedSource": "[json(replace(concat(string(parameters('scaleSets'))), '$AUTHENTICATION$', parameters('authentication')))]"
     },
     "resources": [
         {
@@ -26,7 +26,7 @@
             "name": "[concat(parameters('deploymentContext').parentTemplateUniqueString, '-vmss-', copyIndex(), '-', variables('templateUniqueString'))]",
             "resourceGroup": "[variables('updatedSource')[copyIndex()].resourceGroupName]",
             "copy": {
-                "name": "virtualMachineScaleSet",
+                "name": "virtualMachineScaleSets",
                 "count": "[length(variables('updatedSource'))]",
                 "mode": "Parallel"
             },
@@ -44,15 +44,18 @@
                             "location": "[variables('updatedSource')[copyIndex()].location]",
                             "name": "[variables('updatedSource')[copyIndex()].name]",
                             "sku": "[variables('updatedSource')[copyIndex()].sku]",
-                            "properties": "[variables('updatedSource')[copyIndex()].properties]",
+                            "properties": "[json(replace(string(variables('updatedSource')[copyIndex()].properties), '\"$EXTENSIONS$\"', string(parameters('secrets').extensionsProtectedSettings[string(copyIndex())])))]",
                             "identity": {
                                 "type": "SystemAssigned"
                             }
                         }
                     ],
                     "outputs": {}
+                },
+                "debugSetting": {
+                    "detailLevel": "requestContent, responseContent"
                 }
-            }
+            }    
         }
     ]
 }

@@ -213,7 +213,7 @@ function transform(param, resources) {
     }
 
     let accumulator = {};
-    accumulator['scaleSet'] = [{
+    accumulator['scaleSets'] = [{
         name: param.name,
         sku: sku,
         properties: properties,

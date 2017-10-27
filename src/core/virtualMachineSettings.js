@@ -581,6 +581,14 @@ let virtualMachineValidations = {
                             protectedSettings: (value, parent) => {
                                 // First, let's see if we are a keyvault reference
                                 if (!_.isNil(value) && (value.reference)) {
+                                    // KeyVault references are not supported for extension protectedSettings on VMSS
+                                    if (isScaleSet) {
+                                        return {
+                                            result: false,
+                                            message: 'protectedSettings cannot be a KeyVault reference for Virtual Machine ScaleSets'
+                                        };
+                                    }
+
                                     return v.keyVaultSecretValidations;
                                 }
                                 // If our osType is linux, this CANNOT be null or undefined, because passphrase must be there.
@@ -1471,7 +1479,7 @@ function transform(settings, buildingBlockSettings) {
         publicIpAddresses: [],
         networkInterfaces: [],
         availabilitySet: [],
-        scaleSet: [],
+        scaleSets: [],
         autoScaleSettings: [],
         loadBalancer: [],
         applicationGateways: []
@@ -1527,7 +1535,7 @@ function transform(settings, buildingBlockSettings) {
             let diskEncryptionExtension = [{
                 vms: [vmStamp.name],
                 extensions: [{
-                    name: 'AzureDiskEncryption',
+                    name: vmStamp.osType === 'windows' ? 'AzureDiskEncryption' : 'AzureDiskEncryptionForLinux',
                     publisher: 'Microsoft.Azure.Security',
                     type: vmStamp.osType === 'windows' ? 'AzureDiskEncryption' : 'AzureDiskEncryptionForLinux',
                     typeHandlerVersion: vmStamp.osType === 'windows' ? '1.1' : '0.1',
@@ -1634,13 +1642,16 @@ function transform(settings, buildingBlockSettings) {
     if (!_.isNil(settings.scaleSetSettings)) {
         let ssParam = scaleSetSettings.transform(settings.scaleSetSettings, accumulator);
 
-        accumulator.scaleSet = ssParam.scaleSet;
+        accumulator.scaleSets = ssParam.scaleSets;
         accumulator.autoScaleSettings = ssParam.autoScaleSettings;
 
         // For scaleset, we dont need to create nics, availabilitySet & VMs. Remove from accumulator
         accumulator.virtualMachines = [];
         accumulator.networkInterfaces = [];
         accumulator.availabilitySet = [];
+        // We also need to remove any publicIpAddresses at this point because we can't use them on VMSS.
+        // If the load balancer and/or application gateway need a publicIpAddress, then they will get added below.
+        accumulator.publicIpAddresses = [];
     }
 
     // Process secrets.  We need to put them into a shape that can be assigned to a secureString parameter.
@@ -1705,7 +1716,7 @@ function process({ settings, buildingBlockSettings, defaultSettings }) {
             result.diagnosticStorageAccounts,
             result.loadBalancer,
             result.applicationGateways,
-            result.scaleSet,
+            result.scaleSets,
             result.autoScaleSettings,
             result.networkInterfaces,
             result.publicIpAddresses,
@@ -1731,7 +1742,7 @@ function process({ settings, buildingBlockSettings, defaultSettings }) {
             extensionsProtectedSettings: []
         };
         delete value.parameters.authentication;
-        if (value.parameters.scaleSet.length === 0) {
+        if (value.parameters.scaleSets.length === 0) {
             value.parameters.virtualMachines = _.map(value.parameters.virtualMachines, (value) => {
                 let protectedSettings = {};
                 value.extensions = _.map(value.extensions, (value, index) => {
@@ -1744,23 +1755,42 @@ function process({ settings, buildingBlockSettings, defaultSettings }) {
                 return value;
             });
         } else {
-            value.parameters.scaleSet = _.map(value.parameters.scaleSet, (value) => {
-                let protectedSettings = {};
-                // These have already been transformed at this point.  Should we change this?
-                value.properties.virtualMachineProfile.extensionProfile.extensions =
-                    _.map(value.properties.virtualMachineProfile.extensionProfile.extensions, (value, index) => {
-                        // We will reverse what the scale set settings did....for now.
-                        if (value.properties.protectedSettings.reference) {
-                            protectedSettings[index.toString()] = value.properties.protectedSettings;
-                        } else {
-                            protectedSettings[index.toString()] = {
-                                value: JSON.stringify(value.properties.protectedSettings)
-                            };
-                        }
-                        delete value.properties.protectedSettings;
-                        return value;
-                    });
-                secrets.extensionsProtectedSettings.push(protectedSettings);
+            // We need to change the shape a bit to support VMSS
+            secrets.extensionsProtectedSettings = {};
+            value.parameters.scaleSets = _.map(value.parameters.scaleSets, (value, index) => {
+                // let protectedSettings = {};
+                // // These have already been transformed at this point.  Should we change this?
+                // // We need to alter the shape for VMSS.  The way extensions work is different
+                // // than VMs.  We need to pull the whole set of extensions into the secureObject
+                // // so we can union() them in the template.
+                // value.properties.virtualMachineProfile.extensionProfile.extensions =
+                //     _.map(value.properties.virtualMachineProfile.extensionProfile.extensions, (value, index) => {
+                //         // We will reverse what the scale set settings did....for now.
+                //         if (value.properties.protectedSettings.reference) {
+                //             protectedSettings[index.toString()] = value.properties.protectedSettings;
+                //         } else {
+                //             protectedSettings[index.toString()] = {
+                //                 value: JSON.stringify(value.properties.protectedSettings)
+                //             };
+                //         }
+                //         delete value.properties.protectedSettings;
+                //         return value;
+                //     });
+                // secrets.extensionsProtectedSettings.push(protectedSettings);
+
+                // secrets.extensionsProtectedSettings.push(
+                //     {
+                //         virtualMachineProfile: {
+                //             extensionProfile: {
+                //                 extensions: value.properties.virtualMachineProfile.extensionProfile.extensions
+                //             }
+                //         }
+                //     }
+                // );
+
+                // We have to use the string replace trick
+                secrets.extensionsProtectedSettings[index.toString()] = value.properties.virtualMachineProfile.extensionProfile.extensions;
+                value.properties.virtualMachineProfile.extensionProfile.extensions = '$EXTENSIONS$';
                 return value;
             });
         }
